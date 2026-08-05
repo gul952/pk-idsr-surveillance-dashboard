@@ -29,6 +29,24 @@ def _norm(s):
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
+_NARRATIVE_WORDS = {
+    "the", "a", "an", "this", "that", "did", "does", "from", "data", "week",
+    "percent", "all", "health", "facilities", "report", "reported", "not",
+    "district", "districts", "of", "in", "for", "and", "was", "were",
+}
+
+
+def _looks_like_a_name(candidate, max_words=4):
+    """Rejects narrative-prose false positives (e.g. 'District Umerkot did not
+    report Kech') that can otherwise satisfy a loose row regex by accident."""
+    words = candidate.strip().split()
+    if not words or len(words) > max_words:
+        return False
+    if any(w.lower() in _NARRATIVE_WORDS for w in words):
+        return False
+    return True
+
+
 # ---------- Table 6: district compliance ----------
 
 PAT_COMPLIANCE_MODERN = re.compile(r"^(.*?)\s+(\d[\d,]*)\s+(\d[\d,]*)\s+(\d{1,3})%\s*$")
@@ -47,6 +65,8 @@ def _rows_from_page_compliance(text):
         m2 = PAT_COMPLIANCE_LEGACY.match(line)
         if m2:
             d, ars, total, rep, rate = m2.groups()
+            if not _looks_like_a_name(d):
+                continue
             legacy.append({"district": d.strip(), "total_sites": int(total.replace(",", "")),
                             "reported_sites": int(rep.replace(",", "")), "compliance_rate": int(rate),
                             "ars": int(ars.replace(",", ""))})
@@ -166,6 +186,10 @@ def extract_district_disease_table(page):
         name = line[:first_num_pos].strip()
         if not name or any(ch.isdigit() for ch in name):
             continue
+        if name.lower() in ("total", "totals", "province total", "grand total"):
+            continue  # per-province summary/footer row, not a real district
+        if name.lower() in ("sindh labs", "labs", "laboratory"):
+            continue  # lab/testing facility row, not a district
         try:
             values = {diseases[i]: int(nums[i].replace(",", "")) for i in range(n)}
         except ValueError:
