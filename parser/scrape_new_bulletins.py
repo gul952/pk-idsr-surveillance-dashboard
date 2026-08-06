@@ -92,7 +92,7 @@ def run(output_dir):
         print("Nothing new. Exiting.")
         return False
 
-    all_disease, all_compliance, all_province, log = [], [], [], []
+    all_disease, all_compliance, all_province, all_lab, log = [], [], [], [], []
     with tempfile.TemporaryDirectory() as tmp:
         for week, year, url, fname in new_ones:
             local_path = os.path.join(tmp, fname)
@@ -101,10 +101,11 @@ def run(output_dir):
             except Exception as e:
                 log.append({"file": fname, "issue": f"download failed: {e}"})
                 continue
-            d, c, p = process_file(local_path, crosswalk, log)
+            d, c, p, lb = process_file(local_path, crosswalk, log)
             all_disease.extend(d)
             all_compliance.extend(c)
             all_province.extend(p)
+            all_lab.extend(lb)
 
     def _merge(fname_out, new_rows):
         path = os.path.join(output_dir, fname_out)
@@ -126,6 +127,7 @@ def run(output_dir):
     _merge("district_disease_cases.parquet", all_disease)
     _merge("district_compliance.parquet", all_compliance)
     _merge("province_summary.parquet", all_province)
+    _merge("lab_confirmation.parquet", all_lab)
 
     log_path = os.path.join(output_dir, "build_log.csv")
     if log:

@@ -133,6 +133,7 @@ def extract_province_summary(page):
             pending_name = ""
             if not name:
                 continue
+            name = _TABLE1_NAME_FIXES.get(name, name)
             vals = tokens[-n:]
             row = {"disease": name}
             for p, v in zip(provinces, vals):
@@ -143,7 +144,87 @@ def extract_province_summary(page):
     return {"provinces": provinces, "rows": rows}
 
 
-# ---------- District-level disease case tables (Table 2/3/4...) ----------
+# ---------- Table 5: laboratory confirmation ----------
+
+LAB_PROVINCES = ["Sindh", "Balochistan", "KPK", "ISL", "GB", "Punjab", "AJK"]
+
+# The wrapped 2-line disease/test names in Table 5 and Table 1 follow an
+# identical layout every week (static table structure), so rather than solve
+# the general "orphan continuation line" problem algorithmically, these are
+# corrected with a fixed lookup once verified against real bulletins.
+_TABLE1_NAME_FIXES = {
+    "Chickenpox/": "Chickenpox/Varicella",
+}
+_TABLE5_NAME_FIXES = {
+    "Stool culture &": "Stool culture & Sensitivity",
+}
+# orphan fragment that trails a fixed name and would otherwise contaminate
+# the *next* row's name if not explicitly consumed
+_TABLE5_ORPHAN_SKIP = {
+    "Stool culture &": "Sensitivity",
+}
+
+
+def extract_lab_confirmation_table(page):
+    """Extracts the Table 5 lab-confirmation grid (Test/Positive per province,
+    per disease). Returns None if this page doesn't contain it. Only the
+    standard single-line-name rows are covered; the nested respiratory
+    sub-panel (Covid-19/Influenza A/B x ILI/SARI) at the bottom of the table
+    is intentionally not parsed here -- lower priority, structurally a
+    2-level hierarchy rather than a flat disease list."""
+    text = page.extract_text() or ""
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+    started = False
+    header_seen_provinces = False
+    n = len(LAB_PROVINCES) * 2
+    val_pat = re.compile(r"^(?:-|[\d,]+)$")
+    rows = []
+    pending_name = ""
+    skip_next_orphan = None
+    for l in lines:
+        if l.startswith("Table 5"):
+            started = True
+            continue
+        if not started:
+            continue
+        if l == "Page" or l.startswith("Page"):
+            continue
+        if l.strip() == " ".join(LAB_PROVINCES) or l.strip() == "Diseases":
+            header_seen_provinces = True
+            continue
+        if set(l.replace(" ", "")) <= set("TotalTestPos"):
+            continue
+        if l.strip() in ("ILI", "SARI", "Covid-19", "Influenza A", "Influenza B"):
+            break  # reached the nested respiratory sub-panel -- stop here
+
+        tokens = l.split()
+        if len(tokens) >= n and all(val_pat.match(t) for t in tokens[-n:]):
+            name_tokens = tokens[:-n]
+            name = (pending_name + " " + " ".join(name_tokens)).strip()
+            pending_name = ""
+            if not name:
+                continue
+            orphan = _TABLE5_ORPHAN_SKIP.get(name)
+            name = _TABLE5_NAME_FIXES.get(name, name)
+            skip_next_orphan = orphan
+            vals = tokens[-n:]
+            row = {"disease": name}
+            for i, p in enumerate(LAB_PROVINCES):
+                test_v, pos_v = vals[i * 2], vals[i * 2 + 1]
+                row[f"{p}_test"] = None if test_v == "-" else int(test_v.replace(",", ""))
+                row[f"{p}_pos"] = None if pos_v == "-" else int(pos_v.replace(",", ""))
+            rows.append(row)
+        else:
+            if skip_next_orphan is not None and l.strip() == skip_next_orphan:
+                skip_next_orphan = None
+                continue
+            skip_next_orphan = None
+            pending_name = (pending_name + " " + l).strip()
+
+    if not header_seen_provinces or len(rows) < 5:
+        return None
+    return {"rows": rows}
 
 def _reconstruct_header(table_obj, n_header_rows=2):
     data = table_obj.extract()

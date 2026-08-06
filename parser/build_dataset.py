@@ -20,7 +20,7 @@ import re
 import pdfplumber
 import pandas as pd
 
-from extractors import extract_compliance_table, extract_province_summary, extract_all_district_disease_tables
+from extractors import extract_compliance_table, extract_province_summary, extract_all_district_disease_tables, extract_lab_confirmation_table
 from district_match import match_district, _load_crosswalk
 
 FNAME_PAT = re.compile(r"(\d{1,2})-(\d{4})")
@@ -49,12 +49,12 @@ def process_file(path, crosswalk, log):
     week, year = parse_week_year(fname)
     if week is None:
         log.append({"file": fname, "issue": "could not parse week/year from filename"})
-        return [], [], []
+        return [], [], [], []
 
     wdate = week_start_date(week, year)
     meta = {"week": week, "year": year, "week_start_date": wdate, "source_file": fname}
 
-    disease_rows, compliance_rows, province_rows = [], [], []
+    disease_rows, compliance_rows, province_rows, lab_rows = [], [], [], []
 
     with pdfplumber.open(path) as pdf:
         # --- compliance ---
@@ -110,39 +110,60 @@ def process_file(path, crosswalk, log):
         except Exception as e:
             log.append({"file": fname, "issue": f"district-disease extraction failed: {e}"})
 
-    return disease_rows, compliance_rows, province_rows
+        # --- lab confirmation (Table 5) ---
+        try:
+            found_lab = False
+            for page in pdf.pages:
+                res = extract_lab_confirmation_table(page)
+                if res:
+                    found_lab = True
+                    for row in res["rows"]:
+                        disease = row.pop("disease")
+                        for col, val in row.items():
+                            lab_rows.append({**meta, "disease": disease, "province_metric": col, "value": val})
+                    break
+            if not found_lab:
+                log.append({"file": fname, "issue": "lab confirmation table (Table 5) not found"})
+        except Exception as e:
+            log.append({"file": fname, "issue": f"lab confirmation extraction failed: {e}"})
+
+    return disease_rows, compliance_rows, province_rows, lab_rows
 
 
 def build_all(input_dir, output_dir):
     crosswalk = _load_crosswalk()
-    all_disease, all_compliance, all_province, log = [], [], [], []
+    all_disease, all_compliance, all_province, all_lab, log = [], [], [], [], []
 
     for fname in sorted(os.listdir(input_dir)):
         if not fname.lower().endswith(".pdf"):
             continue
-        d, c, p = process_file(os.path.join(input_dir, fname), crosswalk, log)
+        d, c, p, lb = process_file(os.path.join(input_dir, fname), crosswalk, log)
         all_disease.extend(d)
         all_compliance.extend(c)
         all_province.extend(p)
+        all_lab.extend(lb)
 
     os.makedirs(output_dir, exist_ok=True)
     df_disease = pd.DataFrame(all_disease)
     df_compliance = pd.DataFrame(all_compliance)
     df_province = pd.DataFrame(all_province)
+    df_lab = pd.DataFrame(all_lab)
     df_log = pd.DataFrame(log)
 
     df_disease.to_parquet(f"{output_dir}/district_disease_cases.parquet", index=False)
     df_compliance.to_parquet(f"{output_dir}/district_compliance.parquet", index=False)
     df_province.to_parquet(f"{output_dir}/province_summary.parquet", index=False)
+    df_lab.to_parquet(f"{output_dir}/lab_confirmation.parquet", index=False)
     df_log.to_csv(f"{output_dir}/build_log.csv", index=False)
 
-    return df_disease, df_compliance, df_province, df_log
+    return df_disease, df_compliance, df_province, df_lab, df_log
 
 
 if __name__ == "__main__":
     import sys
-    d, c, p, log = build_all(sys.argv[1], sys.argv[2])
+    d, c, p, lb, log = build_all(sys.argv[1], sys.argv[2])
     print(f"district_disease_cases: {len(d)} rows")
     print(f"district_compliance: {len(c)} rows")
     print(f"province_summary: {len(p)} rows")
+    print(f"lab_confirmation: {len(lb)} rows")
     print(f"log entries: {len(log)}")
