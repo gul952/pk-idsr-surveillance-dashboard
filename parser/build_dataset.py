@@ -6,14 +6,14 @@ Output tables (one row per district/province/disease/week observation):
   - district_compliance    : district-level IDSR reporting compliance, per week
   - province_summary       : national province x disease rollup, per week
 
-DATE CONVENTION (important, unverified assumption):
-  NIH bulletins only ever state "Week N, YYYY" -- no calendar date range appears
-  anywhere in the sampled documents. Dates here use ISO-8601 week numbering
-  (Monday of ISO week N). This has NOT been cross-checked against NIH's actual
-  epi-week convention (which may follow MMWR/CDC weeks -- Sunday start -- instead).
-  Treat `week_start_date` as approximate until calibrated against an external
-  reference (e.g. a bulletin that happens to also state a calendar date, or a
-  known outbreak date from WHO DON cross-referenced against the matching week).
+DATE CONVENTION:
+  NIH's main weekly bulletins only ever state "Week N, YYYY" -- no calendar date
+  range appears in those documents. However, NIH's separate "Provincial Reports"
+  series does state real calendar ranges (e.g. "week 29-2024 (15 July-21 July,
+  2024)"), which was used to verify the convention: ISO-8601 week numbering
+  (Monday of ISO week N) matches exactly -- confirmed via
+  date.fromisocalendar(2024, 29, 1) == 2024-07-15. `week_start_date` below can
+  now be treated as accurate, not merely approximate.
 """
 import os
 import re
