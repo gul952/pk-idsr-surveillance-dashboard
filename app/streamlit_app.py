@@ -1,18 +1,27 @@
 """
 Pakistan IDSR Surveillance Dashboard -- Streamlit entrypoint.
 
-Reads the three consolidated parquet tables produced by parser/build_dataset.py
-(and kept current by the weekly GitHub Action). No district boundary/geometry
-data yet -- the choropleth map view is a placeholder until that's sourced, since
-it needs actual polygon geometries, not just district names.
+Reads the four consolidated parquet tables produced by parser/build_dataset.py
+(and kept current by the weekly GitHub Action), plus the district boundary
+GeoJSON (data/processed/pakistan_districts.geojson, from HDX COD-AB) and the
+geometry join table (parser/reference/district_geometry_join.csv) that maps
+case-data district names to HDX polygon names -- these differ in a handful of
+real ways (spelling variants, and one genuine structural mismatch: HDX has a
+single unified "Kurram" polygon while NIH case data reports it split into
+"Lower & Central Kurram" / "Upper Kurram", so those two rows get summed onto
+one shape).
 """
 import os
+import json
+import csv
+import difflib
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "processed")
+REF_DIR = os.path.join(os.path.dirname(__file__), "..", "parser", "reference")
 
 st.set_page_config(page_title="Pakistan IDSR Surveillance", layout="wide")
 
@@ -26,6 +35,42 @@ def load_data():
         df["week_start_date"] = pd.to_datetime(df["week_start_date"])
         df["week_key"] = df["year"] * 100 + df["week"]
     return disease, compliance, province
+
+
+@st.cache_data(ttl=86400)
+def load_geometry():
+    with open(os.path.join(DATA_DIR, "pakistan_districts.geojson")) as f:
+        geojson = json.load(f)
+    with open(os.path.join(REF_DIR, "district_geometry_join.csv")) as f:
+        join_rows = list(csv.DictReader(f))
+    # case_data_district_raw -> hdx polygon name (many-to-one for the Kurram case)
+    case_to_hdx = {r["case_data_district_raw"]: r["hdx_adm2_name"] for r in join_rows}
+    hdx_names = sorted(set(r["hdx_adm2_name"] for r in join_rows))
+    return geojson, case_to_hdx, hdx_names
+
+
+def resolve_to_hdx(raw_name, case_to_hdx, hdx_names, cutoff=0.72):
+    """Same exact -> fuzzy strategy as parser/district_match.py, applied to
+    the (different, and differently-abbreviated) problem of matching a
+    case-data district name to an HDX polygon name. Reuses the directional-
+    pair guard for the same reason: 'North'/'South' etc. must never fuzzy-
+    cross.
+
+    KNOWN LIMITATION: a bare 'Waziristan' with no direction at all (rare,
+    seen once across the full sample) cannot be disambiguated from the text
+    alone and currently resolves to South Waziristan arbitrarily (first
+    fuzzy candidate). Flagged here rather than silently accepted."""
+    if raw_name in case_to_hdx:
+        return case_to_hdx[raw_name]
+    directional = {"north", "south", "upper", "lower", "east", "west", "central"}
+    raw_dirs = {w for w in directional if w in raw_name.lower()}
+    candidates = difflib.get_close_matches(raw_name, hdx_names, n=3, cutoff=cutoff)
+    for cand in candidates:
+        cand_dirs = {w for w in directional if w in cand.lower()}
+        if raw_dirs and cand_dirs and raw_dirs != cand_dirs:
+            continue
+        return cand
+    return None
 
 
 disease_df, compliance_df, province_df = load_data()
@@ -140,4 +185,35 @@ if latest_week is not None and len(c):
 else:
     st.info("No compliance data in the selected range.")
 
-st.caption("Choropleth map view: pending district boundary geometry data (not yet sourced).")
+st.divider()
+
+# ---------------- choropleth map ----------------
+st.subheader(f"District map -- {disease_pick}, latest week in range")
+geojson, case_to_hdx, hdx_names = load_geometry()
+if latest_week is not None:
+    map_data = d[d["week_key"] == latest_week].copy()
+    map_data["hdx_district"] = map_data["district_raw"].apply(
+        lambda x: resolve_to_hdx(x, case_to_hdx, hdx_names))
+    map_agg = map_data.dropna(subset=["hdx_district"]).groupby("hdx_district", as_index=False)["suspected_cases"].sum()
+
+    unmapped = map_data[map_data["hdx_district"].isna()]["district_raw"].unique().tolist()
+    if unmapped:
+        st.caption(f"Not shown on map (no boundary match yet): {', '.join(unmapped[:8])}"
+                   + (f" +{len(unmapped)-8} more" if len(unmapped) > 8 else ""))
+
+    fig3 = px.choropleth(
+        map_agg, geojson=geojson, locations="hdx_district", featureidkey="properties.district",
+        color="suspected_cases", color_continuous_scale="Reds",
+        hover_name="hdx_district",
+    )
+    fig3.update_geos(fitbounds="locations", visible=False)
+    fig3.update_layout(height=550, margin=dict(t=20, b=20, l=0, r=0))
+    st.plotly_chart(fig3, use_container_width=True)
+    st.caption(
+        "Districts with no fill have no reported cases for this disease/week in the data -- this "
+        "includes essentially all of Punjab, which is structurally absent from NIH's own bulletins "
+        "(see project notes), not a gap in this dashboard's extraction."
+    )
+else:
+    st.info("No data in the selected range.")
+
