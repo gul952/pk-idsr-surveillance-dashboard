@@ -38,7 +38,17 @@ _NARRATIVE_WORDS = {
 
 def _looks_like_a_name(candidate, max_words=4):
     """Rejects narrative-prose false positives (e.g. 'District Umerkot did not
-    report Kech') that can otherwise satisfy a loose row regex by accident."""
+    report Kech') that can otherwise satisfy a loose row regex by accident.
+    Careful with punctuation: real district names can contain tight
+    abbreviation-style periods ('D.I. Khan' -- single-letter initials, no
+    full word before the period), which must not be confused with prose
+    sentence boundaries ('reporting. Malakand' -- a full word before the
+    period). Only the latter pattern is rejected."""
+    import re as _re
+    if _re.search(r",\s|\s&\s", candidate):
+        return False
+    if _re.search(r"[a-zA-Z]{2,}\.\s", candidate):  # 2+-letter word then period+space
+        return False
     words = candidate.strip().split()
     if not words or len(words) > max_words:
         return False
