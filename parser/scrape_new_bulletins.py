@@ -22,6 +22,7 @@ trigger) before trusting the schedule.
 import os
 import re
 import sys
+import time
 import tempfile
 import urllib.parse
 import requests
@@ -34,6 +35,13 @@ from build_dataset import parse_week_year, week_start_date, process_file
 ARCHIVE_URL = "https://phb.nih.org.pk/integratedisease-surveillance-and-response"
 FNAME_PAT = re.compile(r"(\d{1,2})-(\d{4})")
 PDF_LINK_PAT = re.compile(r'href=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']', re.IGNORECASE)
+MAX_DOWNLOADS_PER_RUN = 15   # politeness cap -- a first-time backfill of the
+                             # full ~260-bulletin archive should spread across
+                             # many scheduled runs, not hit NIH's server in one
+                             # burst. Confirmed real: the first live run
+                             # attempted 153 files in one go, which is more
+                             # than necessary and not great etiquette.
+DOWNLOAD_DELAY_SECONDS = 1.5  # small delay between requests, same reasoning
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; IDSR-Dashboard-Bot/1.0; +https://github.com/)"}
 
@@ -73,10 +81,33 @@ def already_processed_filenames(output_dir):
 
 
 def download(url, dest_path):
-    resp = requests.get(url, headers=HEADERS, timeout=60)
-    resp.raise_for_status()
-    with open(dest_path, "wb") as f:
-        f.write(resp.content)
+    """Tries the URL as given, then falls back across NIH's known alternate
+    domains if it 404s -- their archive index page has been observed to link
+    to phb.nih.org.pk for files that actually only exist under www.nih.org.pk
+    (or vice versa). Confirmed real, not a hypothetical: e.g. Weekly_Report-
+    12-2025.pdf 404s under phb.nih.org.pk but resolves under www.nih.org.pk."""
+    tried = []
+    candidates = [url]
+    for alt_domain in ("https://www.nih.org.pk", "https://nih.org.pk", "https://phb.nih.org.pk"):
+        for domain in ("https://phb.nih.org.pk", "https://www.nih.org.pk", "https://nih.org.pk"):
+            if url.startswith(domain):
+                candidates.append(url.replace(domain, alt_domain, 1))
+    seen = set()
+    last_err = None
+    for candidate_url in candidates:
+        if candidate_url in seen:
+            continue
+        seen.add(candidate_url)
+        try:
+            resp = requests.get(candidate_url, headers=HEADERS, timeout=60)
+            resp.raise_for_status()
+            with open(dest_path, "wb") as f:
+                f.write(resp.content)
+            return
+        except Exception as e:
+            last_err = e
+            tried.append(candidate_url)
+    raise RuntimeError(f"failed on all {len(tried)} domain variants: {last_err}")
 
 
 def run(output_dir):
@@ -85,8 +116,16 @@ def run(output_dir):
     candidates = fetch_archive_links()
 
     new_ones = [(w, y, url, fname) for (w, y, url, fname) in candidates if fname not in seen]
+    # newest first: ensures ongoing weekly currency always wins over backfill
+    # when the cap kicks in, with older history filling in gradually across
+    # subsequent scheduled runs
+    new_ones.sort(key=lambda t: (t[1], t[0]), reverse=True)
+    if len(new_ones) > MAX_DOWNLOADS_PER_RUN:
+        print(f"{len(new_ones)} new bulletins found; capping this run to the {MAX_DOWNLOADS_PER_RUN} "
+              f"most recent (politeness to NIH's server -- the rest will pick up on future runs)")
+        new_ones = new_ones[:MAX_DOWNLOADS_PER_RUN]
     print(f"Archive has {len(candidates)} dated bulletins; {len(seen)} already processed; "
-          f"{len(new_ones)} new: {[f for *_, f in new_ones]}")
+          f"{len(new_ones)} will be fetched this run: {[f for *_, f in new_ones]}")
 
     if not new_ones:
         print("Nothing new. Exiting.")
@@ -101,6 +140,8 @@ def run(output_dir):
             except Exception as e:
                 log.append({"file": fname, "issue": f"download failed: {e}"})
                 continue
+            finally:
+                time.sleep(DOWNLOAD_DELAY_SECONDS)
             d, c, p, lb = process_file(local_path, crosswalk, log)
             all_disease.extend(d)
             all_compliance.extend(c)
