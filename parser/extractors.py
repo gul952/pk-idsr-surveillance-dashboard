@@ -60,12 +60,35 @@ def _looks_like_a_name(candidate, max_words=4):
 # ---------- Table 6: district compliance ----------
 
 PAT_COMPLIANCE_MODERN = re.compile(r"^(.*?)\s+(\d[\d,]*)\s+(\d[\d,]*)\s+(\d{1,3})%\s*$")
+# some issues (confirmed real, e.g. Weekly Report-16-2023) have an extra
+# "Number of Agreed Reporting Sites" column between total and reported:
+# District Total Agreed Reported Rate% (4 numbers, not 3). Verified which
+# field is which by checking the compliance-rate arithmetic directly against
+# real data (Umerkot: 98 total, 41 agreed, 34 reported, 83% -- only
+# 34/41 = 83% works, confirming rate is reported/agreed, not reported/total).
+# 'total' in this variant is dropped -- 'agreed' becomes our total_sites, to
+# stay arithmetically consistent with compliance_rate the way every other
+# format already is.
+PAT_COMPLIANCE_MODERN_4COL = re.compile(r"^(.*?)\s+(\d[\d,]*)\s+(\d[\d,]*)\s+(\d[\d,]*)\s+(\d{1,3})%\s*$")
 PAT_COMPLIANCE_LEGACY = re.compile(r"^(.*?)\s+(\d[\d,]*)/(\d[\d,]*)\s+(\d[\d,]*)\s*\((\d{1,3})%\)\s*$")
 
 def _rows_from_page_compliance(text):
     modern, legacy = [], []
     for line in text.split("\n"):
         line = line.strip()
+        m4 = PAT_COMPLIANCE_MODERN_4COL.match(line)
+        if m4:
+            d, total, agreed, rep, rate = m4.groups()
+            # sanity check: does reported/agreed actually match the stated rate?
+            # if not, this 4-number match is probably coincidental noise, not
+            # a real 4-column row -- fall through to try the 3-column pattern
+            # on the same line instead of trusting a bad parse.
+            agreed_n, rep_n, rate_n = int(agreed.replace(",", "")), int(rep.replace(",", "")), int(rate)
+            implied = round(100 * rep_n / agreed_n) if agreed_n else None
+            if implied is not None and abs(implied - rate_n) <= 1:
+                modern.append({"district": d.strip(), "total_sites": agreed_n,
+                                "reported_sites": rep_n, "compliance_rate": rate_n})
+                continue
         m = PAT_COMPLIANCE_MODERN.match(line)
         if m:
             d, tot, rep, rate = m.groups()
