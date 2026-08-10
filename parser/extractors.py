@@ -71,6 +71,12 @@ PAT_COMPLIANCE_MODERN = re.compile(r"^(.*?)\s+(\d[\d,]*)\s+(\d[\d,]*)\s+(\d{1,3}
 # format already is.
 PAT_COMPLIANCE_MODERN_4COL = re.compile(r"^(.*?)\s+(\d[\d,]*)\s+(\d[\d,]*)\s+(\d[\d,]*)\s+(\d{1,3})%\s*$")
 PAT_COMPLIANCE_LEGACY = re.compile(r"^(.*?)\s+(\d[\d,]*)/(\d[\d,]*)\s+(\d[\d,]*)\s*\((\d{1,3})%\)\s*$")
+# some issues omit the "(rate%)" parenthetical entirely when reported=0
+# (confirmed real: 'Haripur 69/69 0', 'Jaffarabad 47/47 0' -- no percentage
+# shown at all, unlike every non-zero row which does show one). Only trusted
+# when reported is actually 0, to avoid mis-catching some other unexpected
+# format where a percentage is legitimately missing for a different reason.
+PAT_COMPLIANCE_LEGACY_ZERO = re.compile(r"^(.*?)\s+(\d[\d,]*)/(\d[\d,]*)\s+(\d[\d,]*)\s*$")
 
 def _rows_from_page_compliance(text):
     modern, legacy = [], []
@@ -103,6 +109,15 @@ def _rows_from_page_compliance(text):
             legacy.append({"district": d.strip(), "total_sites": int(total.replace(",", "")),
                             "reported_sites": int(rep.replace(",", "")), "compliance_rate": int(rate),
                             "ars": int(ars.replace(",", ""))})
+            continue
+        m3 = PAT_COMPLIANCE_LEGACY_ZERO.match(line)
+        if m3:
+            d, ars, total, rep = m3.groups()
+            rep_n = int(rep.replace(",", ""))
+            if rep_n == 0 and _looks_like_a_name(d):
+                legacy.append({"district": d.strip(), "total_sites": int(total.replace(",", "")),
+                                "reported_sites": 0, "compliance_rate": 0,
+                                "ars": int(ars.replace(",", ""))})
     return modern, legacy
 
 
