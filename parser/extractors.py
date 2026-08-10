@@ -214,6 +214,13 @@ def _extract_known_disease_suffix(contaminated_name):
     return contaminated_name
 
 
+_PROVINCE_NAME_NORMALIZE = {
+    "Azad Jamu and Kashmir": "AJK",
+    "Gilgit Baltistan": "GB",
+    "Khyber Pakhtun khwa": "KP",
+}
+
+
 def extract_province_summary(page):
     """Extracts the Diseases x Province national summary table (Table 1)."""
     text = page.extract_text() or ""
@@ -222,6 +229,7 @@ def extract_province_summary(page):
     provinces = _find_province_header(page)
     if provinces is None:
         return None
+    provinces = [_PROVINCE_NAME_NORMALIZE.get(p, p) for p in provinces]
     n = len(provinces)
 
     val_pat = re.compile(r"^(?:NR|[\d,]+)$")

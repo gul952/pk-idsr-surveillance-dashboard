@@ -217,3 +217,38 @@ if latest_week is not None:
 else:
     st.info("No data in the selected range.")
 
+st.divider()
+
+# ---------------- data completeness ----------------
+st.subheader("Data completeness by province")
+st.caption(
+    "How many weeks each province appears in NIH's own national summary table -- not this "
+    "dashboard's extraction success, but whether the province was included in the source "
+    "bulletin at all that week."
+)
+comp_prov = province_df[province_df["province"] != "Total"].copy()
+presence = (
+    comp_prov.groupby(["week_key", "province"])["suspected_cases"]
+    .apply(lambda s: s.notna().any())
+    .unstack()
+    .fillna(False)
+)
+presence_pct = (presence.sum() / len(presence) * 100).sort_values()
+
+fig4 = px.bar(
+    presence_pct, orientation="h",
+    labels={"value": "% of weeks present in the bulletin", "province": ""},
+    color=presence_pct.values, color_continuous_scale=["#d62728", "#2ca02c"],
+)
+fig4.update_layout(height=320, showlegend=False, coloraxis_showscale=False, margin=dict(t=20, b=20))
+st.plotly_chart(fig4, use_container_width=True)
+
+lowest = presence_pct.index[0]
+st.caption(
+    f"**{lowest}** appears in only {presence_pct.iloc[0]:.0f}% of weeks covered by this dataset "
+    f"({int(presence.iloc[:, presence.columns.get_loc(lowest)].sum())} of {len(presence)}), against "
+    f"{presence_pct.iloc[-1]:.0f}% for the most consistently-reported province. This reflects NIH's "
+    "own bulletins, not a gap in this dashboard's extraction -- see the project notes for how this "
+    "was verified across multiple independent tables in the source data."
+)
+
