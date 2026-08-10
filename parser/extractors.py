@@ -138,25 +138,101 @@ def extract_compliance_table(pdf, min_rows_to_confirm=5):
 
 # ---------- Table 1: province-wise national summary ----------
 
+_KNOWN_PROVINCE_TOKENS = {
+    "ajk", "azad", "jammu", "kashmir", "balochistan", "gilgit", "baltistan",
+    "gb", "ict", "islamabad", "khyber", "pakhtunkhwa", "kp", "punjab",
+    "sindh", "total",
+}
+
+
+def _find_province_header(page):
+    """Reconstructs Table 1's header from the grid, trying increasing numbers
+    of header rows -- province names wrap across 2 lines in the modern
+    format but 3 in the 2021/2022 legacy format ('Azad Jamu' / 'and' /
+    'Kashmir' on three separate grid rows). Stops growing the header the
+    moment a row contains purely-numeric cells, since that means the row is
+    actual data (e.g. the ILI row), not a header continuation -- verified
+    against real data rather than trusted blindly, since an earlier looser
+    check accepted an incomplete 2-row reconstruction ('Azad Jamu and',
+    missing 'Kashmir') because 'and' happened to be in the province
+    vocabulary too."""
+    tabs = page.find_tables()
+    num_pat = re.compile(r"^[\d,]+$")
+    for t in tabs:
+        data = t.extract()
+        if not data or not data[0]:
+            continue
+        # "Diseases" can be the literal first cell (legacy format) or appear
+        # a few cells in with leading empty cells (modern format) -- check
+        # the first few cells, not strictly index 0
+        first_cells = [(c or "").strip() for c in data[0][:3]]
+        if "Diseases" not in first_cells:
+            continue
+        max_rows = 1
+        for row in data[1:5]:
+            if any(c and num_pat.match(c.strip()) for c in row):
+                break
+            max_rows += 1
+        header = _reconstruct_header(t, n_header_rows=max_rows)
+        if not header or header[0] != "Diseases":
+            continue
+        provinces = header[1:]
+        if not (6 <= len(provinces) <= 9):
+            continue
+        plausible = all(
+            any(tok in _KNOWN_PROVINCE_TOKENS for tok in re.split(r"\s+", p.lower()))
+            for p in provinces
+        )
+        if plausible:
+            return provinces
+    return None
+
+
+_KNOWN_DISEASE_NAMES = [
+    "AD (Non-Cholera)", "Malaria", "ILI", "ALRI < 5 years", "TB", "B. Diarrhea",
+    "VH (B, C & D)", "Dog Bite", "Typhoid", "SARI", "AVH (A & E)", "Measles",
+    "CL", "AWD (S. Cholera)", "Chickenpox/Varicella", "Mumps", "Chikungunya",
+    "Dengue", "Pertussis", "AFP", "Meningitis", "Gonorrhea", "HIV/AIDS",
+    "Syphilis", "Brucellosis", "Diphtheria (Probable)", "NT", "Leprosy",
+    "Rubella (CRS)", "Rabies", "Anthrax", "S. Cholera", "AVH",
+]
+
+
+def _extract_known_disease_suffix(contaminated_name):
+    """Recovers the real disease name from a narrative-contaminated string.
+    Some legacy pages use a two-column layout (narrative sidebar beside the
+    table); linear text extraction interleaves the columns, so a data row's
+    'name' portion can pick up a whole paragraph as a prefix. Values stay
+    correct regardless (captured positionally from the string's tail), but
+    the name needs recovery. The real disease name reliably survives as the
+    tail of the contaminated string, so this tries known names as suffixes,
+    longest first, rather than accepting the raw blob."""
+    low = contaminated_name.lower()
+    for d in sorted(_KNOWN_DISEASE_NAMES, key=len, reverse=True):
+        if low.endswith(d.lower()):
+            return d
+    return contaminated_name
+
+
 def extract_province_summary(page):
     """Extracts the Diseases x Province national summary table (Table 1)."""
     text = page.extract_text() or ""
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    header_idx = None
-    for i, l in enumerate(lines):
-        if l.startswith("Diseases") and "Total" in l:
-            header_idx = i
-            break
-    if header_idx is None:
+    provinces = _find_province_header(page)
+    if provinces is None:
         return None
-    provinces = lines[header_idx].split()[1:]
     n = len(provinces)
 
     val_pat = re.compile(r"^(?:NR|[\d,]+)$")
     rows = []
     pending_name = ""
-    for l in lines[header_idx + 1:]:
+    start_idx = 0
+    for i, l in enumerate(lines):
+        if re.match(r"^Table\s*\d+:", l):
+            start_idx = i + 1  # skip narrative highlights before the table --
+            break               # otherwise pending_name accumulates garbage
+    for l in lines[start_idx:]:
         if l.startswith("Page"):
             continue
         tokens = l.split()
@@ -166,6 +242,8 @@ def extract_province_summary(page):
             pending_name = ""
             if not name:
                 continue
+            if len(name) > 30 or len(name.split()) > 4:
+                name = _extract_known_disease_suffix(name)
             name = _TABLE1_NAME_FIXES.get(name, name)
             vals = tokens[-n:]
             row = {"disease": name}
@@ -326,3 +404,38 @@ def extract_all_district_disease_tables(pdf):
         if res:
             results.append({"page": pno + 1, **res})
     return results
+
+
+# ---------- Legacy (2021/2022) district-disease tables: NOT implemented ----------
+#
+# DELIBERATELY DEFERRED, not just unattempted -- reasoning documented here so
+# a future session (or contributor) doesn't have to re-derive it:
+#
+# 2021/2022 bulletins DO have a district-level disease table per province
+# (e.g. "Table 2: District wise distribution of most frequently reported
+# cases during week 25, Sindh"), structurally similar to Table 1 (diseases as
+# rows, entities as columns) rather than the modern format's (districts as
+# rows, diseases as columns).
+#
+# Two real problems, not just inconvenience:
+#   1. Only covers a CURATED "top N" subset of districts per province per
+#      week (e.g. KP week 16/2022 shows 10 of KP's 37 districts) -- not
+#      comprehensive, so even a working extractor wouldn't support a fair
+#      district-to-district comparison the way 2023+ data does.
+#   2. Multi-word district names in the header ("Karachi East", "Naushero
+#      Feroze") wrap across lines with real column-order ambiguity. The
+#      grid-mode-header + text-mode-data technique that solved this exact
+#      problem for the modern format doesn't transfer cleanly here --
+#      pdfplumber's table detection picks up surrounding chart/paragraph
+#      noise on these pages (70x17 "table" detected where the real one is
+#      ~12x10). Getting a column order wrong here would silently attribute
+#      one district's case counts to a different district -- the same class
+#      of bug as the North/South Waziristan mismatch caught in
+#      district_match.py, but with no equivalent safeguard yet designed.
+#
+# Given (1) caps the value even if solved, and (2) carries real silent-
+# corruption risk without a safeguard as clear as the directional-pair guard,
+# this was deferred rather than force-fixed. If revisited: the safeguard
+# would need to be an explicit district-name-order verification (e.g. cross-
+# checking recovered column headers against known per-province district
+# lists via the crosswalk) before trusting any column mapping.
