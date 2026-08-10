@@ -155,25 +155,46 @@ def _find_province_header(page):
     against real data rather than trusted blindly, since an earlier looser
     check accepted an incomplete 2-row reconstruction ('Azad Jamu and',
     missing 'Kashmir') because 'and' happened to be in the province
-    vocabulary too."""
+    vocabulary too.
+
+    'Diseases' isn't always at row 0 of the detected table object: on some
+    two-column-layout pages, pdfplumber's grid detection merges the entire
+    narrative sidebar in with the table into one large object, and the real
+    header row can be well into it (row 17, confirmed on a real file). This
+    scans all rows of each candidate table, not just the first."""
     tabs = page.find_tables()
-    num_pat = re.compile(r"^[\d,]+$")
     for t in tabs:
         data = t.extract()
-        if not data or not data[0]:
+        if not data:
             continue
-        # "Diseases" can be the literal first cell (legacy format) or appear
-        # a few cells in with leading empty cells (modern format) -- check
-        # the first few cells, not strictly index 0
-        first_cells = [(c or "").strip() for c in data[0][:3]]
-        if "Diseases" not in first_cells:
+        header_row_idx = None
+        header_col_idx = None
+        for ridx, row in enumerate(data):
+            cells = [(c or "").strip() for c in (row or [])[:8]]
+            if "Diseases" in cells:
+                header_row_idx = ridx
+                header_col_idx = next(i for i, c in enumerate(row) if (c or "").strip() == "Diseases")
+                break
+        if header_row_idx is None:
             continue
+        # re-anchor to both the header row AND column -- a two-column page
+        # layout can put narrative sidebar text in the same grid row, at
+        # earlier column positions, than the real "Diseases" header cell
+        data = [row[header_col_idx:] for row in data[header_row_idx:]]
+
         max_rows = 1
         for row in data[1:5]:
-            if any(c and num_pat.match(c.strip()) for c in row):
+            early_cells = [(c or "").strip() for c in (row or [])[:3]]
+            if any(early_cells):
+                # a real data row has its disease name somewhere in the
+                # first few columns (exact index can shift slightly with
+                # pdfplumber's grid quirks -- confirmed on real files: one
+                # puts it at column 0, another at column 1 after trimming).
+                # A header continuation row only has content in later
+                # columns, where the wrapped province-name fragments are.
                 break
             max_rows += 1
-        header = _reconstruct_header(t, n_header_rows=max_rows)
+        header = _reconstruct_header_from_rows(data[:max_rows])
         if not header or header[0] != "Diseases":
             continue
         provinces = header[1:]
@@ -345,15 +366,18 @@ def extract_lab_confirmation_table(page):
         return None
     return {"rows": rows}
 
-def _reconstruct_header(table_obj, n_header_rows=2):
-    data = table_obj.extract()
-    header_rows = data[:n_header_rows]
+def _reconstruct_header_from_rows(header_rows):
     ncols = max(len(r) for r in header_rows)
     combined = []
     for i in range(ncols):
         parts = [_norm(r[i]) for r in header_rows if i < len(r) and r[i]]
         combined.append(" ".join(parts).strip())
     return [c for c in combined if c]
+
+
+def _reconstruct_header(table_obj, n_header_rows=2):
+    data = table_obj.extract()
+    return _reconstruct_header_from_rows(data[:n_header_rows])
 
 
 def extract_district_disease_table(page):
