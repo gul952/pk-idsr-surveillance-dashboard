@@ -24,6 +24,7 @@ Values are unaffected. Fix planned via a static disease-name lookup table, since
 wrapping is identical every week.
 """
 import re
+from reference.disease_name_crosswalk import normalize_disease_name
 
 def _norm(s):
     return re.sub(r"\s+", " ", (s or "")).strip()
@@ -231,6 +232,8 @@ _KNOWN_DISEASE_NAMES = [
     "Dengue", "Pertussis", "AFP", "Meningitis", "Gonorrhea", "HIV/AIDS",
     "Syphilis", "Brucellosis", "Diphtheria (Probable)", "NT", "Leprosy",
     "Rubella (CRS)", "Rabies", "Anthrax", "S. Cholera", "AVH",
+    "AD (Non-", "Chickenpox/", "AWD (S.", "Diphtheria", "AVH (A&E)", "AVH(A&E)",
+    "B.Diarrhea", "Mpox", "COVID-19", "Chickenpox",
 ]
 
 
@@ -242,10 +245,20 @@ def _extract_known_disease_suffix(contaminated_name):
     correct regardless (captured positionally from the string's tail), but
     the name needs recovery. The real disease name reliably survives as the
     tail of the contaminated string, so this tries known names as suffixes,
-    longest first, rather than accepting the raw blob."""
-    low = contaminated_name.lower()
+    longest first, rather than accepting the raw blob. Whitespace is
+    normalized before comparing (confirmed real: 'Chickenpox/ Varicella'
+    with a space vs 'Chickenpox/Varicella' without, from different tables).
+
+    Also strips trailing stray number tokens first (confirmed real: 'Typhoid
+    2 10', 'SARI 10 21 0' -- a column-count mismatch on some files leaks 1-2
+    leading values into the name capture, same root cause as the 4-column
+    compliance-table variant found earlier, just showing up in this table
+    too)."""
+    stripped = re.sub(r"(\s+\d[\d,]*)+$", "", contaminated_name).strip()
+    norm = re.sub(r"\s+", " ", stripped).strip().lower()
     for d in sorted(_KNOWN_DISEASE_NAMES, key=len, reverse=True):
-        if low.endswith(d.lower()):
+        d_norm = re.sub(r"\s+", " ", d).strip().lower()
+        if norm.endswith(d_norm):
             return d
     return contaminated_name
 
@@ -286,9 +299,15 @@ def extract_province_summary(page):
             pending_name = ""
             if not name:
                 continue
-            if len(name) > 30 or len(name.split()) > 4:
-                name = _extract_known_disease_suffix(name)
+            name = _extract_known_disease_suffix(name)
             name = _TABLE1_NAME_FIXES.get(name, name)
+            if len(name) > 30:
+                # unrecoverable: didn't end in any known disease name, so it's
+                # not narrative-contamination-with-a-real-row-underneath, it's
+                # something else entirely (confirmed real: chart axis-label
+                # text can coincidentally satisfy the value-count pattern).
+                # Drop rather than commit obvious noise as if it were data.
+                continue
             vals = tokens[-n:]
             row = {"disease": name}
             for p, v in zip(provinces, vals):
@@ -309,6 +328,14 @@ LAB_PROVINCES = ["Sindh", "Balochistan", "KPK", "ISL", "GB", "Punjab", "AJK"]
 # corrected with a fixed lookup once verified against real bulletins.
 _TABLE1_NAME_FIXES = {
     "Chickenpox/": "Chickenpox/Varicella",
+    "Chickenpox/ Varicella": "Chickenpox/Varicella",
+    "AD (Non-": "AD (Non-Cholera)",
+    "AWD (S.": "AWD (S. Cholera)",
+    "Diphtheria": "Diphtheria (Probable)",
+    "AVH": "AVH (A & E)",
+    "AVH (A&E)": "AVH (A & E)",
+    "AVH(A&E)": "AVH (A & E)",
+    "B.Diarrhea": "B. Diarrhea",
 }
 _TABLE5_NAME_FIXES = {
     "Stool culture &": "Stool culture & Sensitivity",
@@ -411,7 +438,7 @@ def extract_district_disease_table(page):
     header = _reconstruct_header(tabs[0])
     if not header or header[0].lower() != "districts":
         return None
-    diseases = header[1:]
+    diseases = [normalize_disease_name(d) for d in header[1:]]
     n = len(diseases)
 
     num_pat = re.compile(r"[\d,]+")
