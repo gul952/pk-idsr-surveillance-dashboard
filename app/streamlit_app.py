@@ -57,6 +57,7 @@ def load_who_events():
 
 
 
+def resolve_to_hdx(raw_name, case_to_hdx, hdx_names, cutoff=0.72):
     """Same exact -> fuzzy strategy as parser/district_match.py, applied to
     the (different, and differently-abbreviated) problem of matching a
     case-data district name to an HDX polygon name. Reuses the directional-
@@ -173,7 +174,7 @@ if len(ts):
                             textangle=-90, xanchor="right", yanchor="top", font=dict(size=9, color="purple"))
 
 fig.update_layout(height=400, margin=dict(t=20, b=20))
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width='stretch')
 if len(ts) and len(relevant):
     st.caption("Dashed lines: WHO-documented events for this disease. Sources: "
                + " | ".join(f"[{r['source_name']}]({r['source_url']})" for _, r in relevant.iterrows()))
@@ -189,7 +190,7 @@ if latest_week is not None:
            .sort_values("suspected_cases", ascending=False).head(15))
     fig2 = px.bar(top, x="suspected_cases", y="district_raw", color="province", orientation="h")
     fig2.update_layout(height=450, yaxis=dict(autorange="reversed"), margin=dict(t=20, b=20))
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width='stretch')
 else:
     st.info("No data in the selected range.")
 
@@ -239,13 +240,13 @@ if latest_week is not None:
         compliance_gap = 100 - risk_df["compliance_rate"].fillna(risk_df["compliance_rate"].mean() if risk_df["compliance_rate"].notna().any() else 50)
         risk_df["risk_score"] = (0.6 * z_norm.fillna(0) + 0.4 * compliance_gap).round(0)
         risk_df = risk_df.sort_values("risk_score", ascending=False).head(15)
-        risk_df["trend_z"] = risk_df["trend_z"].round(2)
+        risk_df["trend_z"] = pd.to_numeric(risk_df["trend_z"], errors="coerce").round(2)
 
         fig5 = px.bar(risk_df, x="risk_score", y="district", orientation="h",
                       hover_data=["cases", "trend_z", "compliance_rate"],
                       color="risk_score", color_continuous_scale="Reds")
         fig5.update_layout(height=450, yaxis=dict(autorange="reversed"), margin=dict(t=20, b=20), coloraxis_showscale=False)
-        st.plotly_chart(fig5, use_container_width=True)
+        st.plotly_chart(fig5, width='stretch')
         st.caption(
             "risk_score = 60% unusualness of this week vs. that district's own last 4 weeks (z-score, "
             "normalized) + 40% reporting-compliance gap. trend_z near 0 means normal for that district; "
@@ -264,7 +265,7 @@ if latest_week is not None and len(c):
     st.dataframe(
         latest_c[["province", "district_raw", "total_sites", "reported_sites", "compliance_rate"]]
         .rename(columns={"district_raw": "district"}),
-        use_container_width=True, height=400,
+        width='stretch', height=400,
     )
     low = latest_c[latest_c["compliance_rate"] < 50]
     if len(low):
@@ -297,7 +298,7 @@ if latest_week is not None:
     )
     fig3.update_geos(fitbounds="locations", visible=False)
     fig3.update_layout(height=550, margin=dict(t=20, b=20, l=0, r=0))
-    st.plotly_chart(fig3, use_container_width=True)
+    st.plotly_chart(fig3, width='stretch')
     st.caption(
         "Districts with no fill have no reported cases for this disease/week in the data -- this "
         "includes essentially all of Punjab, which is structurally absent from NIH's own bulletins "
@@ -330,7 +331,7 @@ fig4 = px.bar(
     color=presence_pct.values, color_continuous_scale=["#d62728", "#2ca02c"],
 )
 fig4.update_layout(height=320, showlegend=False, coloraxis_showscale=False, margin=dict(t=20, b=20))
-st.plotly_chart(fig4, use_container_width=True)
+st.plotly_chart(fig4, width='stretch')
 
 lowest = presence_pct.index[0]
 st.caption(
