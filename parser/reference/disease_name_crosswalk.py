@@ -17,6 +17,7 @@ the same pattern used for district names in district_province_crosswalk.csv.
 
 DISEASE_NAME_NORMALIZE = {
     "A LRI <5 Years": "ALRI <5 years",
+    "A LRI < 5 years": "ALRI <5 years",
     "ALR I < 5 years": "ALRI <5 years",
     "ALRI < 5": "ALRI <5 years",
     "ALRI < 5 years": "ALRI <5 years",
@@ -24,6 +25,7 @@ DISEASE_NAME_NORMALIZE = {
 
     "AD (Non-": "AD (Non-Cholera)",
     "AD (Non- Cholera)": "AD (Non-Cholera)",
+    "AD (non- cholera)": "AD (Non-Cholera)",
     "AD Non-": "AD (Non-Cholera)",
     "AD Non- Cholera)": "AD (Non-Cholera)",
 
@@ -41,8 +43,21 @@ DISEASE_NAME_NORMALIZE = {
     "Animal / Dog Bite": "Animal/Dog Bite",
 
     "VH (B, C": "VH (B, C & D)",
+
+    "Brucell osis": "Brucellosis",
+    "Mump s": "Mumps",
+    "Typh oid": "Typhoid",
+    "Typhoi d": "Typhoid",
 }
 
 
 def normalize_disease_name(name):
-    return DISEASE_NAME_NORMALIZE.get(name, name)
+    if name in DISEASE_NAME_NORMALIZE:
+        return DISEASE_NAME_NORMALIZE[name]
+    # case-insensitive fallback, since some files differ only in capitalization
+    # (confirmed real: "AD (Non-Cholera)" vs "AD (non- cholera)")
+    lname = name.strip().lower()
+    for k, v in DISEASE_NAME_NORMALIZE.items():
+        if k.strip().lower() == lname:
+            return v
+    return name

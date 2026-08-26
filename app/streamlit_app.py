@@ -49,7 +49,14 @@ def load_geometry():
     return geojson, case_to_hdx, hdx_names
 
 
-def resolve_to_hdx(raw_name, case_to_hdx, hdx_names, cutoff=0.72):
+@st.cache_data(ttl=86400)
+def load_who_events():
+    path = os.path.join(REF_DIR, "who_don_events.csv")
+    events = pd.read_csv(path, parse_dates=["event_date"])
+    return events
+
+
+
     """Same exact -> fuzzy strategy as parser/district_match.py, applied to
     the (different, and differently-abbreviated) problem of matching a
     case-data district name to an HDX polygon name. Reuses the directional-
@@ -147,8 +154,29 @@ anomalies = ts[ts["anomaly"]]
 if len(anomalies):
     fig.add_trace(go.Scatter(x=anomalies["week_start_date"], y=anomalies["suspected_cases"], mode="markers",
                               name="Anomaly (>2 std above rolling avg)", marker=dict(size=12, symbol="x", color="red")))
+
+# WHO Disease Outbreak News overlay -- loosely matched by disease name substring
+# (WHO's naming doesn't always align exactly with NIH's, e.g. "Cholera (AWD)" vs
+# "AWD (S. Cholera)"), and only shown when the event date falls in the visible range
+who_events = load_who_events()
+if len(ts):
+    lo, hi = ts["week_start_date"].min(), ts["week_start_date"].max()
+    relevant = who_events[
+        (who_events["event_date"] >= lo) & (who_events["event_date"] <= hi) &
+        (who_events["disease"].str.lower().str.contains(disease_pick.split()[0].lower())
+         | pd.Series([disease_pick.lower() in d.lower() for d in who_events["disease"]]))
+    ]
+    for _, ev in relevant.iterrows():
+        fig.add_vline(x=ev["event_date"], line_dash="dash", line_color="purple", opacity=0.6)
+        fig.add_annotation(x=ev["event_date"], y=1, yref="paper", showarrow=False,
+                            text=ev["title"][:30] + ("..." if len(ev["title"]) > 30 else ""),
+                            textangle=-90, xanchor="right", yanchor="top", font=dict(size=9, color="purple"))
+
 fig.update_layout(height=400, margin=dict(t=20, b=20))
 st.plotly_chart(fig, use_container_width=True)
+if len(ts) and len(relevant):
+    st.caption("Dashed lines: WHO-documented events for this disease. Sources: "
+               + " | ".join(f"[{r['source_name']}]({r['source_url']})" for _, r in relevant.iterrows()))
 if len(ts) < 8:
     st.caption(f"Note: only {len(ts)} weeks of data in the current sample -- rolling average and anomaly "
                f"flagging get more meaningful as the archive backfills further.")
@@ -166,6 +194,67 @@ else:
     st.info("No data in the selected range.")
 
 st.divider()
+
+# ---------------- district risk index ----------------
+st.subheader(f"District risk index -- {disease_pick}, latest week in range")
+st.caption(
+    "Combines two things a raw case count alone doesn't tell you: whether this week is unusual "
+    "*for that specific district* (not just which district has the biggest city), and whether the "
+    "reporting behind the number can actually be trusted. Both components are shown, not just the "
+    "final score -- a district can rank high for very different reasons."
+)
+if latest_week is not None:
+    dist_all = disease_df[disease_df["disease"] == disease_pick].copy()
+    hist = dist_all[dist_all["week_key"] <= latest_week].sort_values("week_key")
+    recent_stats = (
+        hist.groupby("district_raw")["suspected_cases"]
+        .apply(lambda s: s.tail(5).iloc[:-1])  # up to 4 prior weeks, excluding latest
+        .groupby("district_raw").agg(["mean", "std"])
+        if len(hist) else pd.DataFrame()
+    )
+    latest_vals = hist[hist["week_key"] == latest_week].groupby("district_raw")["suspected_cases"].sum()
+
+    risk_rows = []
+    for dist, val in latest_vals.items():
+        prior_mean = recent_stats["mean"].get(dist, None) if len(recent_stats) else None
+        prior_std = recent_stats["std"].get(dist, None) if len(recent_stats) else None
+        if prior_mean is not None and prior_std and prior_std > 0:
+            z = (val - prior_mean) / prior_std
+        elif prior_mean is not None:
+            z = 1.0 if val > prior_mean else 0.0  # no variance to compare against
+        else:
+            z = None  # not enough history for this district yet
+        comp_row = compliance_df[(compliance_df["week_key"] == latest_week) & (compliance_df["district_raw"] == dist)]
+        comp_rate = comp_row["compliance_rate"].iloc[0] if len(comp_row) else None
+        risk_rows.append({"district": dist, "cases": val, "trend_z": z, "compliance_rate": comp_rate})
+
+    risk_df = pd.DataFrame(risk_rows)
+    if len(risk_df):
+        # normalize each component to 0-100 before combining, so neither dominates by scale
+        z_clip = risk_df["trend_z"].clip(lower=-2, upper=4)
+        if z_clip.notna().any() and z_clip.max() != z_clip.min():
+            z_norm = (z_clip - z_clip.min()) / (z_clip.max() - z_clip.min()) * 100
+        else:
+            z_norm = pd.Series(0, index=risk_df.index)
+        compliance_gap = 100 - risk_df["compliance_rate"].fillna(risk_df["compliance_rate"].mean() if risk_df["compliance_rate"].notna().any() else 50)
+        risk_df["risk_score"] = (0.6 * z_norm.fillna(0) + 0.4 * compliance_gap).round(0)
+        risk_df = risk_df.sort_values("risk_score", ascending=False).head(15)
+        risk_df["trend_z"] = risk_df["trend_z"].round(2)
+
+        fig5 = px.bar(risk_df, x="risk_score", y="district", orientation="h",
+                      hover_data=["cases", "trend_z", "compliance_rate"],
+                      color="risk_score", color_continuous_scale="Reds")
+        fig5.update_layout(height=450, yaxis=dict(autorange="reversed"), margin=dict(t=20, b=20), coloraxis_showscale=False)
+        st.plotly_chart(fig5, use_container_width=True)
+        st.caption(
+            "risk_score = 60% unusualness of this week vs. that district's own last 4 weeks (z-score, "
+            "normalized) + 40% reporting-compliance gap. trend_z near 0 means normal for that district; "
+            "compliance_rate blank means no compliance data for that district that week."
+        )
+    else:
+        st.info("Not enough data to compute a risk index for this selection.")
+else:
+    st.info("No data in the selected range.")
 
 # ---------------- compliance ----------------
 st.subheader("District IDSR reporting compliance (selection)")
