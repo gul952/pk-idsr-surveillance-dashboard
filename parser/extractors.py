@@ -301,6 +301,14 @@ def extract_province_summary(page):
                 continue
             name = _extract_known_disease_suffix(name)
             name = _TABLE1_NAME_FIXES.get(name, name)
+            if len(name) <= 30:
+                # only worth the general squash-based normalizer once the
+                # narrative-contamination handling above has already done its
+                # job -- this catches spacing-corruption variants ("Malar ia")
+                # on whatever's left, the same mechanism used for
+                # district_disease_cases, general enough to handle new
+                # corruption patterns without needing hand-added fixes each time
+                name = normalize_disease_name(name)
             if len(name) > 30:
                 # unrecoverable: didn't end in any known disease name, so it's
                 # not narrative-contamination-with-a-real-row-underneath, it's
