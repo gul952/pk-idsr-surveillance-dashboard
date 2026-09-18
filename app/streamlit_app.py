@@ -160,6 +160,7 @@ if len(anomalies):
 # (WHO's naming doesn't always align exactly with NIH's, e.g. "Cholera (AWD)" vs
 # "AWD (S. Cholera)"), and only shown when the event date falls in the visible range
 who_events = load_who_events()
+relevant = who_events.iloc[0:0]  # empty DataFrame with same columns, always defined
 if len(ts):
     lo, hi = ts["week_start_date"].min(), ts["week_start_date"].max()
     relevant = who_events[
