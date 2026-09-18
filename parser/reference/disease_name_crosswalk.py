@@ -44,6 +44,12 @@ CANONICAL_DISEASES = [
 ]
 
 
+def _strip_cid_ligatures(s):
+    """Remove PDF cid: ligature artefacts like '(cid:415)' before normalizing."""
+    import re
+    return re.sub(r'\(cid:\d+\)', '', s)
+
+
 def _squash(s):
     return "".join(ch for ch in s.lower() if ch.isalnum())
 
@@ -54,10 +60,27 @@ _CANONICAL_SQUASHED = {_squash(d): d for d in CANONICAL_DISEASES}
 _CANONICAL_BY_LENGTH = sorted(CANONICAL_DISEASES, key=lambda d: -len(_squash(d)))
 
 
+_ALIASES = {
+    # Bare 'B.' is always a truncated 'B. Diarrhea' — too short for the
+    # substring check (which is gated at 3+ chars on the squashed form),
+    # so handle it explicitly here.
+    "b": "B. Diarrhea",
+    # 'Meningi(cid:415)s' -> after CID strip -> 'Meningis'; the 'ti' ligature
+    # (cid:415) is consumed entirely, leaving a string that shares no substring
+    # relationship with 'meningitis', so handle explicitly.
+    "meningis": "Meningitis",
+    "varicellameningis": "Varicella Meningitis",
+}
+
+
 def normalize_disease_name(name):
+    # Strip PDF cid: ligature artefacts (e.g. 'Meningi(cid:415)s') before anything else
+    name = _strip_cid_ligatures(name)
     squashed = _squash(name)
     if not squashed:
         return name
+    if squashed in _ALIASES:
+        return _ALIASES[squashed]
     if squashed in _CANONICAL_SQUASHED:
         return _CANONICAL_SQUASHED[squashed]
     # truncation: the observed name is a (long-enough) fragment of a real one

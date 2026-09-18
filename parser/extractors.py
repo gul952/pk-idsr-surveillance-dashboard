@@ -278,6 +278,11 @@ def extract_province_summary(page):
     provinces = _find_province_header(page)
     if provinces is None:
         return None
+    # Strip numbers/commas/NR that sometimes leak from an adjacent cell into
+    # the province name during header reconstruction (e.g. 'KP 3,663' -> 'KP',
+    # 'Punjab NR' -> 'Punjab').  Apply before the dict lookup so the lookup
+    # always sees the clean token.
+    provinces = [re.sub(r"\s+[\d,NR]+$", "", p).strip() for p in provinces]
     provinces = [_PROVINCE_NAME_NORMALIZE.get(p, p) for p in provinces]
     n = len(provinces)
 
