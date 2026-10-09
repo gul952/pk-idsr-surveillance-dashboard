@@ -23,7 +23,7 @@ import streamlit as st
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "processed")
 REF_DIR = os.path.join(os.path.dirname(__file__), "..", "parser", "reference")
 
-st.set_page_config(page_title="Pakistan IDSR Surveillance", layout="wide")
+st.set_page_config(page_title="Pakistan IDSR Weekly Surveillance", layout="wide")
 
 
 @st.cache_data(ttl=3600)
